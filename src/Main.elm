@@ -1,7 +1,6 @@
 module Main exposing (main)
 
 import Dict exposing (Dict)
-import IdSource exposing (IdSource)
 import Set exposing (Set)
 
 
@@ -22,11 +21,10 @@ computation =
 
         substMap =
             typed
-                |> Result.map (Tuple.first >> generateEquations)
-                |> Result.andThen unifyAllEquations
+                |> Result.andThen (generateEquations >> unifyAllEquations)
     in
     Result.map2
-        (\( ( _, type_ ), _ ) subst ->
+        (\( _, type_ ) subst ->
             getType type_ subst
         )
         typed
@@ -110,56 +108,67 @@ getVarId type_ =
 -- STAGE 1: Assign IDs (in `TVar`s) to all subexpressions (well, except integers)
 
 
-assignIds : Expr -> Result TypeError ( TypedExpr, IdSource )
+assignIds : Expr -> Result TypeError TypedExpr
 assignIds expr =
-    assignIdsHelp
-        Dict.empty
-        IdSource.new
-        expr
+    assignIdsHelp 0 Dict.empty expr
+        -- why's there no Tuple.third?
+        |> Result.map (\( _, _, typedExpr ) -> typedExpr)
 
 
-assignIdsHelp : Dict String Type -> IdSource -> Expr -> Result TypeError ( TypedExpr, IdSource )
-assignIdsHelp symbolTable idSource expr =
-    case expr of
+assignIdsHelp : Int -> Dict String Int -> Expr -> Result TypeError ( Int, Dict String Int, TypedExpr )
+assignIdsHelp unusedId0 varIds0 expr =
+    (case expr of
         Int int ->
-            Ok ( ( TyInt int, TInt ), idSource )
+            Ok
+                ( unusedId0
+                , varIds0
+                , TyInt int
+                )
 
         Var name ->
-            Dict.get name symbolTable
-                |> Result.fromMaybe (UnboundName name)
-                |> Result.map (\type_ -> ( ( TyVar name, type_ ), idSource ))
+            Ok
+                ( unusedId0
+                , Dict.insert name unusedId0 varIds0
+                , TyVar name
+                )
 
         Plus e1 e2 ->
-            assignIdsHelp symbolTable idSource e1
+            -- elm-format makes this look ugly ... is there a different way?
+            assignIdsHelp unusedId0 varIds0 e1
                 |> Result.andThen
-                    (\( e1_, idSource1 ) ->
-                        assignIdsHelp symbolTable idSource1 e2
+                    (\( unusedId1, varIds1, e1_ ) ->
+                        assignIdsHelp unusedId1 varIds1 e2
                             |> Result.map
-                                (\( e2_, idSource2 ) ->
-                                    let
-                                        ( id, idSource3 ) =
-                                            IdSource.produceId idSource2
-                                    in
-                                    ( ( TyPlus e1_ e2_, TVar id ), idSource3 )
+                                (\( unusedId2, varIds2, e2_ ) ->
+                                    ( unusedId2
+                                    , varIds2
+                                    , TyPlus e1_ e2_
+                                    )
                                 )
                     )
 
         Lambda arg body ->
-            let
-                ( lambdaId, idSource1 ) =
-                    IdSource.produceId idSource
-
-                ( argId, idSource2 ) =
-                    IdSource.produceId idSource1
-
-                bodySymbolTable =
-                    Dict.insert arg (TVar argId) symbolTable
-            in
-            assignIdsHelp bodySymbolTable idSource2 body
-                |> Result.map
-                    (\( body_, idSource3 ) ->
-                        ( ( TyLambda arg body_ argId, TVar lambdaId ), idSource3 )
+            assignIdsHelp unusedId0 varIds0 body
+                |> Result.andThen
+                    (\( unusedId1, varIds1, body_ ) ->
+                        Dict.get arg varIds1
+                            |> Result.fromMaybe (UnboundName arg)
+                            |> Result.map
+                                (\argId ->
+                                    ( unusedId1
+                                    , varIds1
+                                    , TyLambda arg body_ argId
+                                    )
+                                )
                     )
+    )
+        |> Result.map
+            (\( unusedIdN, varIdsN, recursedExpr ) ->
+                ( unusedIdN + 1
+                , varIdsN
+                , ( recursedExpr, TVar unusedIdN )
+                )
+            )
 
 
 
